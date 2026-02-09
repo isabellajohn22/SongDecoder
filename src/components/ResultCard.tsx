@@ -8,9 +8,63 @@
  * ============================================================================
  */
 
+import { useState, useCallback } from 'react';
 import Image from 'next/image';
 import type { TrackInfo, VibeProfile } from '@/lib/services/types';
-import { getVibeGradient, type VibeGenre } from '@/lib/vibeTaxonomy';
+import { getVibeGradient, VIBE_META, type VibeGenre } from '@/lib/vibeTaxonomy';
+
+/**
+ * VibeLabel — shows VIBE_META description on hover/tap.
+ * Uses a controlled tooltip with a short enter delay to prevent flicker.
+ */
+function VibeLabel({
+  vibe,
+  children,
+}: {
+  vibe: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [timer, setTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
+
+  const description = VIBE_META[vibe as VibeGenre]?.description;
+
+  const handleEnter = useCallback(() => {
+    const t = setTimeout(() => setOpen(true), 180);
+    setTimer(t);
+  }, []);
+
+  const handleLeave = useCallback(() => {
+    if (timer) clearTimeout(timer);
+    setTimer(null);
+    setOpen(false);
+  }, [timer]);
+
+  if (!description) return <>{children}</>;
+
+  return (
+    <span
+      className="relative inline-block cursor-default"
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
+      onTouchStart={() => setOpen((v) => !v)}
+    >
+      {children}
+      <span
+        className={`absolute left-1/2 -translate-x-1/2 top-full mt-3
+          w-72 px-4 py-3 rounded-xl
+          bg-[rgba(18,18,22,0.95)] backdrop-blur-md border border-white/10
+          shadow-xl shadow-black/40
+          text-[13px] font-normal leading-relaxed text-white/70 text-center
+          pointer-events-none select-none z-50
+          transition-all duration-200
+          ${open ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1'}`}
+      >
+        {description}
+      </span>
+    </span>
+  );
+}
 
 interface ResultCardProps {
   track: TrackInfo;
@@ -69,16 +123,20 @@ export function ResultCard({ track, vibeProfile }: ResultCardProps) {
             {/* Primary Vibe Genre */}
             <div className="pt-2">
               <p className="text-xs uppercase tracking-widest text-white/40 dark:text-white/40 mb-2">This track feels like</p>
-              <h2 className="hero-vibe">{vibeProfile.primaryVibeGenre}</h2>
+              <VibeLabel vibe={vibeProfile.primaryVibeGenre}>
+                <h2 className="hero-vibe">{vibeProfile.primaryVibeGenre}</h2>
+              </VibeLabel>
             </div>
 
             {/* Secondary Vibes */}
             {vibeProfile.secondaryVibeGenres.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {vibeProfile.secondaryVibeGenres.map((vibe) => (
-                  <span key={vibe} className="vibe-genre-badge text-xs">
-                    {vibe}
-                  </span>
+                  <VibeLabel key={vibe} vibe={vibe}>
+                    <span className="vibe-genre-badge text-xs">
+                      {vibe}
+                    </span>
+                  </VibeLabel>
                 ))}
               </div>
             )}
