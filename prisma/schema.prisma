@@ -1,0 +1,216 @@
+// Database schema for track analysis, audio features, and recommendations.
+// Tracks and artists use deterministic IDs; caching expires after 30 days.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Track metadata fetched from Last.fm; ID is hash of (name + artist)
+model Track {
+  /// Generated track ID (hash of name + artist)
+  id            String   @id @db.VarChar(64)
+
+  /// Track display name
+  name          String   @db.VarChar(512)
+
+  /// Album ID for reference
+  albumId       String   @db.VarChar(64)
+
+  /// Album display name
+  albumName     String   @db.VarChar(512)
+
+  /// URL to album cover image (largest available), nullable if no image
+  albumImageUrl String?  @db.VarChar(512)
+
+  /// Full Last.fm URL to open this track
+  externalUrl   String   @db.VarChar(512)
+  
+  /// Timestamp when this record was first created
+  createdAt     DateTime @default(now())
+  
+  /// Timestamp when this record was last updated (used for cache freshness)
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  trackArtists         TrackArtist[]
+  audioFeatures        AudioFeatures?
+  recommendationSet    RecommendationSet?    @relation("SeedTrack")
+  recommendedInSets    RecommendationItem[]  @relation("RecommendedTrack")
+
+  @@map("tracks")
+}
+
+// Artist information; shared across tracks via TrackArtist join table
+model Artist {
+  /// Generated artist ID (hash of artist name)
+  id        String   @id @db.VarChar(64)
+  
+  /// Artist display name
+  name      String   @db.VarChar(512)
+  
+  /// Timestamp when this record was first created
+  createdAt DateTime @default(now())
+  
+  /// Timestamp when this record was last updated
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  trackArtists TrackArtist[]
+
+  @@map("artists")
+}
+
+// Join table: tracks have multiple artists; position field preserves order (0 = primary)
+model TrackArtist {
+  /// Reference to the track
+  trackId  String @db.VarChar(64)
+  track    Track  @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  
+  /// Reference to the artist
+  artistId String @db.VarChar(64)
+  artist   Artist @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  
+  /// Position of this artist in the track's artist list (0 = primary artist)
+  position Int
+
+  @@id([trackId, artistId])
+  @@index([trackId])
+  @@index([artistId])
+  @@map("track_artists")
+}
+
+// Estimated audio features from Last.fm tags; drives fingerprint and explanations
+model AudioFeatures {
+  /// Track ID (one-to-one relationship with Track)
+  trackId       String   @id @db.VarChar(64)
+  track         Track    @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  
+  /// Beats per minute, rounded to nearest integer
+  bpmInt        Int
+  
+  /// Musical key as note name (C, C#, D, etc.) or "Unknown" if unavailable
+  keyName       String   @db.VarChar(16)
+  
+  /// Mode: "Major", "Minor", or "Unknown"
+  modeName      String   @db.VarChar(16)
+  
+  /// Time signature (beats per measure, typically 3, 4, 5, 6, or 7)
+  timeSignature Int
+  
+  /// Overall loudness in dB (typically -60 to 0)
+  loudness      Float
+  
+  /// Energy level (0.0 to 1.0) - perceptual intensity
+  energy        Float
+  
+  /// Danceability (0.0 to 1.0) - rhythm stability and beat strength
+  danceability  Float
+  
+  /// Valence (0.0 to 1.0) - musical positiveness/happiness
+  valence       Float
+  
+  /// Acousticness (0.0 to 1.0) - confidence track is acoustic
+  acousticness  Float
+  
+  /// Instrumentalness (0.0 to 1.0) - predicts no vocals
+  instrumentalness Float
+  
+  /// Liveness (0.0 to 1.0) - probability of live audience
+  liveness      Float
+  
+  /// Speechiness (0.0 to 1.0) - presence of spoken words
+  speechiness   Float
+  
+  /// When features were first cached
+  createdAt     DateTime @default(now())
+  
+  /// When features were last refreshed from Spotify
+  updatedAt     DateTime @updatedAt
+
+  @@map("audio_features")
+}
+
+// Cached analysis responses; 30-day TTL; keyed on normalized (artist::track)
+model TrackAnalysisCache {
+  /// Unique identifier
+  id                String   @id @default(cuid())
+
+  /// Track display name
+  trackName         String   @db.VarChar(512)
+
+  /// Artist display name
+  artistName        String   @db.VarChar(512)
+
+  /// Normalized unique key: "${artistName}::${trackName}" lowercased/trimmed
+  trackKey          String   @unique @db.VarChar(1024)
+
+  /// Full Last.fm URL to open this track (optional)
+  externalUrl       String?  @db.VarChar(512)
+
+  /// Full analysis response JSON
+  analysisJson      Json     @db.JsonB
+
+  /// When this cache entry was created
+  createdAt         DateTime @default(now())
+
+  /// When this cache entry was last updated
+  updatedAt         DateTime @updatedAt
+
+  /// When this cache entry expires (createdAt + 30 days)
+  expiresAt         DateTime
+
+  /// When this cache entry was last accessed (for analytics)
+  lastAccessedAt    DateTime?
+
+  @@index([trackKey])
+  @@index([expiresAt])
+
+  @@map("track_analysis_cache")
+}
+
+// Contains recommendations for a seed track; replaced on re-analysis
+model RecommendationSet {
+  /// Unique identifier for this recommendation set
+  id          String   @id @default(uuid()) @db.Uuid
+  
+  /// The track that was used as the seed for recommendations
+  seedTrackId String   @unique @db.VarChar(64)
+  seedTrack   Track    @relation("SeedTrack", fields: [seedTrackId], references: [id], onDelete: Cascade)
+  
+  /// When this recommendation set was created
+  createdAt   DateTime @default(now())
+
+  // Relations
+  items RecommendationItem[]
+
+  @@map("recommendation_sets")
+}
+
+// Individual recommendations; stores rank, distance score, and reason
+model RecommendationItem {
+  /// Reference to the parent recommendation set
+  recommendationSetId String          @db.Uuid
+  recommendationSet   RecommendationSet @relation(fields: [recommendationSetId], references: [id], onDelete: Cascade)
+  
+  /// Reference to the recommended track
+  recommendedTrackId  String          @db.VarChar(64)
+  recommendedTrack    Track           @relation("RecommendedTrack", fields: [recommendedTrackId], references: [id], onDelete: Cascade)
+  
+  /// Rank position (1 = most similar, 10 = least similar in top 10)
+  rank                Int
+  
+  /// Computed distance score (lower = more similar)
+  distanceScore       Float
+  
+  /// Deterministic explanation of why this track was recommended
+  reason              String          @db.VarChar(512)
+
+  @@id([recommendationSetId, recommendedTrackId])
+  @@index([recommendationSetId, rank])
+  @@map("recommendation_items")
+}
